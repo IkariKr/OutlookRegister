@@ -5,54 +5,67 @@ from concurrent.futures import ThreadPoolExecutor
 from get_token import get_access_token
 from controllers.patchright_controller import PatchrightController
 from controllers.playwright_controller import PlaywrightController
-from utils import random_email, generate_strong_password 
+from utils import random_email, generate_strong_password
 
-
-# --- 不确定有无帮助 ---
-# 1. CDP 检测：wait_for_timeout --> time.sleep()
-# 2. 使用 launch_persistent_context 
-# 3. 避免短时间访问
-# 4. 模拟真人轨迹
 
 def process_single_flow(controller):
-    page = None
+    attempt = 1
+    while True:
+        page = None
+        try:
+            page = controller.get_thread_page()
+            if page is None:
+                raise RuntimeError("[Error: Browser] - 浏览器启动失败，可能是代理不可用。")
 
-    try:
-        page = controller.get_thread_page()
+            email = random_email()
+            password = generate_strong_password()
 
-        email = random_email()
-        password = generate_strong_password()
+            result = controller.outlook_register(page, email, password)
 
-        # 调用 controller 特定的注册方法
-        result = controller.outlook_register(page, email, password)
+            if result and not controller.enable_oauth2:
+                return True
+            if not result:
+                raise RuntimeError("[Error: Register] - 注册流程失败。")
 
-        if result and not controller.enable_oauth2:
-            return True
-        elif not result:
+            token_result = get_access_token(page, email)
+            if token_result[0]:
+                refresh_token, access_token, expire_at = token_result
+                with open(r"Results\outlook_token.txt", "a") as f2:
+                    f2.write(
+                        f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n"
+                    )
+                print(f"[Success: TokenAuth] - {email}@outlook.com")
+                return True
+
+            raise RuntimeError("[Error: OAuth2] - Token 获取失败。")
+
+        except Exception as e:
+            print(e)
+
+        finally:
+            controller.clean_up(page, "done_browser")
+
+        if not controller.enable_auto_rotate_proxy:
             return False
 
-        token_result = get_access_token(page, email)
-        if token_result[0]:
-            refresh_token, access_token, expire_at =  token_result
-            with open(r'Results\outlook_token.txt', 'a') as f2:
-                f2.write(f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
-            print(f'[Success: TokenAuth] - {email}@outlook.com')
-            return True
-        else:
+        if controller.max_proxy_retries > 0 and attempt >= controller.max_proxy_retries:
+            print(f"[Error: Retry] - 已达到最大代理重试次数 {controller.max_proxy_retries}，停止当前任务。")
             return False
 
-    except Exception as e:
-        print(e)
-        return False
-    
-    finally:
+        next_attempt = attempt + 1
+        rotated = controller.rotate_proxy_for_retry(next_attempt)
+        if not rotated:
+            print("[Error: ProxyPool] - 代理池未取到可用代理，停止当前任务。")
+            return False
 
-        controller.clean_up(page, "done_browser")
+        attempt = next_attempt
+
 
 def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
     task_counter = 0
     succeeded_tasks = 0
     failed_tasks = 0
+    progress_step = max(1, max_tasks // 2)
 
     with ThreadPoolExecutor(max_workers=concurrent_flows) as executor:
         running_futures = set()
@@ -74,30 +87,29 @@ def run_concurrent_flows(controller, concurrent_flows=10, max_tasks=100):
                 new_future = executor.submit(process_single_flow, controller)
                 running_futures.add(new_future)
                 task_counter += 1
-                if task_counter % (max_tasks // 2) == 0:
+                if task_counter % progress_step == 0 or task_counter == max_tasks:
                     print(f"已提交 {task_counter}/{max_tasks} 任务.")
 
             time.sleep(0.5)
 
     print(f"\n[Result] - 共: {max_tasks}, 成功 {succeeded_tasks}, 失败 {failed_tasks}")
+    return succeeded_tasks, failed_tasks
 
 
 if __name__ == "__main__":
-
-    with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f) 
+    with open("config.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
     os.makedirs("Results", exist_ok=True)
 
     max_tasks = data["max_tasks"]
     concurrent_flows = data["concurrent_flows"]
 
-    if data["choose_browser"] =="patchright":
+    if data["choose_browser"] == "patchright":
         selected_controller = PatchrightController()
-    elif data["choose_browser"] =="playwright":
+    elif data["choose_browser"] == "playwright":
         selected_controller = PlaywrightController()
     else:
-        print("不支持的浏览器类型，填写patchright或者playwright")
-  
+        raise ValueError("不支持的浏览器类型，请填写 patchright 或 playwright。")
 
     try:
         run_concurrent_flows(selected_controller, concurrent_flows, max_tasks)

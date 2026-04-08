@@ -1,23 +1,35 @@
 {
-    "choose_browser": "patchright",
-    "proxy": "http://127.0.0.1:7897",
-    "bot_protection_wait": 11,
-    "max_captcha_retries": 2,
-    "concurrent_flows": 5,
-    "max_tasks": 5,
-    "oauth2": {
-        "enable_oauth2": false,
-        "client_id": "",
-        "redirect_url": "",
-        "Scopes": [
-            "offline_access",
-            "https://graph.microsoft.com/Mail.ReadWrite",
-            "https://graph.microsoft.com/Mail.Send",
-            "https://graph.microsoft.com/User.Read"
-        ]
-    },
-    "playwright": {
-        "browser_path": ""
-    },
-    "info": "外层参数必须填写,内部参数可选.playwright可用性较差.并且使用playwright指纹浏览器要能过https://www.browserscan.net,否则请使用patchright.请本地搭建代理池."
+    "choose_browser":  "patchright",
+    "proxy":  "",
+    "bot_protection_wait":  11,
+    "max_captcha_retries":  2,
+    "concurrent_flows":  1,
+    "max_tasks":  2,
+    "proxy_pool":  {
+                       "enable_auto_rotate":  true,
+                       "api_url":  "http://127.0.0.1:5010/get/?type=https",
+                       "retry_interval_seconds":  2,
+                       "max_proxy_retries":  0,
+                       "fetch_retries_per_round":  6,
+                       "enable_probe_before_switch":  true,
+                       "probe_url":  "https://outlook.live.com/mail/0/?prompt=create_account",
+                       "probe_timeout_seconds":  8,
+                       "probe_success_status_codes":  [200, 301, 302, 303, 307, 308, 401, 403, 405],
+                       "probe_accept_non_5xx":  true
+                   },
+    "oauth2":  {
+                   "enable_oauth2":  false,
+                   "client_id":  "",
+                   "redirect_url":  "",
+                   "Scopes":  [
+                                  "offline_access",
+                                  "https://graph.microsoft.com/Mail.ReadWrite",
+                                  "https://graph.microsoft.com/Mail.Send",
+                                  "https://graph.microsoft.com/User.Read"
+                              ]
+               },
+    "playwright":  {
+                       "browser_path":  ""
+                   },
+    "info":  "外层参数必须填写,内部参数可选.playwright可用性较差.并且使用playwright指纹浏览器要能过https://www.browserscan.net,否则请使用patchright.请本地搭建代理池."
 }

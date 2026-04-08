@@ -2,6 +2,7 @@ import time
 import json
 import random
 import threading
+import requests
 from faker import Faker
 from abc import ABC, abstractmethod
 
@@ -17,6 +18,22 @@ class BaseBrowserController(ABC):
         self.max_captcha_retries = data['max_captcha_retries']
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
         self.proxy = data['proxy']
+        proxy_pool = data.get("proxy_pool", {})
+        self.enable_auto_rotate_proxy = proxy_pool.get("enable_auto_rotate", False)
+        self.proxy_pool_api_url = proxy_pool.get("api_url", "http://127.0.0.1:5010/get/?type=https")
+        self.proxy_pool_retry_interval = proxy_pool.get("retry_interval_seconds", 2)
+        self.max_proxy_retries = proxy_pool.get("max_proxy_retries", 0)
+        self.fetch_retries_per_round = proxy_pool.get("fetch_retries_per_round", 3)
+        self.enable_proxy_probe = proxy_pool.get("enable_probe_before_switch", True)
+        self.proxy_probe_url = proxy_pool.get(
+            "probe_url",
+            "https://outlook.live.com/mail/0/?prompt=create_account"
+        )
+        self.proxy_probe_timeout = proxy_pool.get("probe_timeout_seconds", 8)
+        self.proxy_probe_success_status_codes = set(
+            proxy_pool.get("probe_success_status_codes", [200, 301, 302, 303, 307, 308, 401, 403, 405])
+        )
+        self.proxy_probe_accept_non_5xx = proxy_pool.get("probe_accept_non_5xx", True)
 
         self.thread_local = threading.local()
         self.cleanup_lock = threading.Lock()
@@ -61,7 +78,7 @@ class BaseBrowserController(ABC):
 
             p, b  = self.launch_browser()
             if not p:
-                return False
+                return None
 
             self.thread_local.playwright = p
             self.thread_local.browser = b
@@ -70,6 +87,102 @@ class BaseBrowserController(ABC):
                 self.active_resources.append((p, b))
 
         return self.thread_local.browser
+
+    def get_current_proxy(self):
+        return getattr(self.thread_local, "proxy", self.proxy)
+
+    def close_thread_browser(self):
+        p = getattr(self.thread_local, "playwright", None)
+        b = getattr(self.thread_local, "browser", None)
+
+        if b:
+            try:
+                b.close()
+            except Exception:
+                pass
+        if p:
+            try:
+                p.stop()
+            except Exception:
+                pass
+
+        with self.cleanup_lock:
+            self.active_resources = [
+                (rp, rb) for rp, rb in self.active_resources
+                if rp is not p and rb is not b
+            ]
+
+        if hasattr(self.thread_local, "playwright"):
+            del self.thread_local.playwright
+        if hasattr(self.thread_local, "browser"):
+            del self.thread_local.browser
+
+    def fetch_proxy_from_pool(self):
+        if not self.proxy_pool_api_url:
+            return None
+
+        try:
+            response = requests.get(self.proxy_pool_api_url, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            proxy_value = payload.get("proxy")
+            if not proxy_value:
+                return None
+            if proxy_value.startswith("http://") or proxy_value.startswith("https://"):
+                return proxy_value
+            return f"http://{proxy_value}"
+        except Exception:
+            return None
+
+    def probe_proxy_reachability(self, proxy_url):
+        """
+        中文：切换代理前探测目标站连通性，减少无效重试。
+        English: Probe target-site reachability before proxy switch to reduce invalid retries.
+        """
+        if not self.enable_proxy_probe:
+            return True
+
+        proxies = {"http": proxy_url, "https": proxy_url}
+        try:
+            response = requests.get(
+                self.proxy_probe_url,
+                proxies=proxies,
+                timeout=self.proxy_probe_timeout,
+                allow_redirects=False
+            )
+            status_code = response.status_code
+            if status_code in self.proxy_probe_success_status_codes:
+                return True
+            if self.proxy_probe_accept_non_5xx and status_code < 500 and status_code != 407:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def rotate_proxy_for_retry(self, attempt_index):
+        if not self.enable_auto_rotate_proxy:
+            return False
+
+        fetch_retries = self.fetch_retries_per_round if self.fetch_retries_per_round > 0 else 1
+        tried_proxies = set()
+        for _ in range(fetch_retries):
+            new_proxy = self.fetch_proxy_from_pool()
+            if new_proxy:
+                if new_proxy in tried_proxies:
+                    continue
+                tried_proxies.add(new_proxy)
+
+                if not self.probe_proxy_reachability(new_proxy):
+                    print(f"[Info: ProxyProbe] - 代理探测未通过，跳过: {new_proxy}")
+                    continue
+
+                self.thread_local.proxy = new_proxy
+                self.close_thread_browser()
+                print(f"[Info: Proxy] - 第 {attempt_index} 次重试切换代理: {new_proxy}")
+                return True
+            time.sleep(self.proxy_pool_retry_interval)
+
+        return False
 
     def outlook_register(self, page, email, password):
 

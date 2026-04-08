@@ -15,11 +15,12 @@ class PlaywrightController(BaseBrowserController):
     def launch_browser(self):
         try:
             p = sync_playwright().start()
+            current_proxy = self.get_current_proxy()
 
             proxy_settings = {
-                "server": self.proxy,
+                "server": current_proxy,
                 "bypass": "localhost",
-            } if self.proxy else None
+            } if current_proxy else None
             b = p.chromium.launch(
                 executable_path=self.browser_path,
                 headless=False,            
@@ -35,6 +36,8 @@ class PlaywrightController(BaseBrowserController):
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
+        if not browser:
+            return None
         context = browser.new_context()
         return context.new_page()
     
