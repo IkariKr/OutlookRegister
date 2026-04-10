@@ -15,16 +15,12 @@ class PlaywrightController(BaseBrowserController):
     def launch_browser(self):
         try:
             p = sync_playwright().start()
-            current_proxy = self.get_current_proxy()
-
-            proxy_settings = {
-                "server": current_proxy,
-                "bypass": "localhost",
-            } if current_proxy else None
+            proxy_settings = self.build_browser_proxy_settings()
+            launch_args = self.build_browser_launch_args()
             b = p.chromium.launch(
                 executable_path=self.browser_path,
                 headless=False,            
-                args=['--lang=zh-CN'],
+                args=launch_args,
                 proxy=proxy_settings
             )
 
@@ -42,6 +38,8 @@ class PlaywrightController(BaseBrowserController):
         return context.new_page()
     
     def handle_captcha(self, page):
+        if self.enable_manual_captcha:
+            return self.wait_for_manual_captcha(page)
 
         page.wait_for_event("request", lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"), timeout=22000)
         page.wait_for_timeout(800)

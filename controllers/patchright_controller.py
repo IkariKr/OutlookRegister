@@ -8,16 +8,12 @@ class PatchrightController(BaseBrowserController):
     def launch_browser(self):
         try:
             p = sync_playwright().start() 
-            current_proxy = self.get_current_proxy()
-
-            proxy_settings = {
-                "server": current_proxy,
-                "bypass": "localhost",
-            } if current_proxy else None
+            proxy_settings = self.build_browser_proxy_settings()
+            launch_args = self.build_browser_launch_args()
 
             b = p.chromium.launch(
                 headless=False,            
-                args=['--lang=zh-CN'],
+                args=launch_args,
                 proxy=proxy_settings
             )
 
@@ -28,6 +24,8 @@ class PatchrightController(BaseBrowserController):
             return False, False
         
     def handle_captcha(self, page):
+        if self.enable_manual_captcha:
+            return self.wait_for_manual_captcha(page)
 
         frame1 = page.frame_locator('iframe[title="验证质询"]')
         frame2 = frame1.frame_locator('iframe[style*="display: block"]')

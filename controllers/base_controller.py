@@ -3,6 +3,7 @@ import json
 import random
 import threading
 import requests
+from urllib.parse import quote
 from faker import Faker
 from abc import ABC, abstractmethod
 
@@ -17,13 +18,23 @@ class BaseBrowserController(ABC):
         self.wait_time = data['bot_protection_wait'] * 1000
         self.max_captcha_retries = data['max_captcha_retries']
         self.enable_oauth2 = data["oauth2"]['enable_oauth2']
+        self.oauth_client_id = data["oauth2"].get('client_id', '')
         self.proxy = data['proxy']
+        playwright_config = data.get("playwright", {})
+        self.no_system_proxy = bool(playwright_config.get("no_system_proxy", False))
+        manual_captcha = data.get("manual_captcha", {})
+        self.enable_manual_captcha = manual_captcha.get("enabled", False)
+        self.manual_captcha_timeout_seconds = manual_captcha.get("timeout_seconds", 300)
+        self.manual_captcha_poll_interval_seconds = manual_captcha.get("poll_interval_seconds", 2)
         proxy_pool = data.get("proxy_pool", {})
         self.enable_auto_rotate_proxy = proxy_pool.get("enable_auto_rotate", False)
         self.proxy_pool_api_url = proxy_pool.get("api_url", "http://127.0.0.1:5010/get/?type=https")
         self.proxy_pool_retry_interval = proxy_pool.get("retry_interval_seconds", 2)
         self.max_proxy_retries = proxy_pool.get("max_proxy_retries", 0)
         self.fetch_retries_per_round = proxy_pool.get("fetch_retries_per_round", 3)
+        self.proxy_pool_delete_api_url = proxy_pool.get("delete_api_url", "http://127.0.0.1:5010/delete/")
+        self.report_bad_proxy_on_probe_fail = proxy_pool.get("report_bad_proxy_on_probe_fail", True)
+        self.report_bad_proxy_on_register_fail = proxy_pool.get("report_bad_proxy_on_register_fail", False)
         self.enable_proxy_probe = proxy_pool.get("enable_probe_before_switch", True)
         self.proxy_probe_url = proxy_pool.get(
             "probe_url",
@@ -91,6 +102,22 @@ class BaseBrowserController(ABC):
     def get_current_proxy(self):
         return getattr(self.thread_local, "proxy", self.proxy)
 
+    def build_browser_launch_args(self):
+        args = ['--lang=zh-CN']
+        current_proxy = str(self.get_current_proxy() or "").strip()
+        if self.no_system_proxy and not current_proxy:
+            args.append('--no-proxy-server')
+        return args
+
+    def build_browser_proxy_settings(self):
+        current_proxy = str(self.get_current_proxy() or "").strip()
+        if not current_proxy:
+            return None
+        return {
+            "server": current_proxy,
+            "bypass": "localhost",
+        }
+
     def close_thread_browser(self):
         p = getattr(self.thread_local, "playwright", None)
         b = getattr(self.thread_local, "browser", None)
@@ -117,6 +144,57 @@ class BaseBrowserController(ABC):
         if hasattr(self.thread_local, "browser"):
             del self.thread_local.browser
 
+    def _extract_proxy_raw(self, proxy_url):
+        if not proxy_url:
+            return ""
+        if "://" in proxy_url:
+            return proxy_url.split("://", 1)[1]
+        return proxy_url
+
+    def _normalize_pool_proxy_payload(self, payload):
+        if not isinstance(payload, dict):
+            return None
+
+        proxy_raw = str(payload.get("proxy", "")).strip()
+        if not proxy_raw:
+            return None
+
+        proxy_type = str(payload.get("proxy_type", "http")).strip().lower() or "http"
+        if "://" in proxy_raw:
+            scheme, raw = proxy_raw.split("://", 1)
+            scheme = (scheme or "").lower()
+            proxy_raw = raw
+            if scheme in ("socks5", "socks5h"):
+                proxy_type = "socks5"
+            elif scheme in ("http", "https"):
+                proxy_type = "http"
+
+        scheme = "socks5" if proxy_type == "socks5" else "http"
+        proxy_url = f"{scheme}://{proxy_raw}"
+        return {
+            "proxy_url": proxy_url,
+            "proxy_raw": proxy_raw,
+            "proxy_type": proxy_type
+        }
+
+    def _requests_proxy_url(self, proxy_url, proxy_type):
+        if proxy_type == "socks5":
+            if proxy_url.startswith("socks5://"):
+                return "socks5h://" + proxy_url[len("socks5://"):]
+            if proxy_url.startswith("socks5h://"):
+                return proxy_url
+        return proxy_url
+
+    def get_current_proxy_meta(self):
+        proxy_url = self.get_current_proxy()
+        proxy_type = getattr(
+            self.thread_local,
+            "proxy_type",
+            "socks5" if str(proxy_url).startswith("socks5://") else "http"
+        )
+        proxy_raw = getattr(self.thread_local, "proxy_raw", self._extract_proxy_raw(proxy_url))
+        return proxy_url, proxy_raw, proxy_type
+
     def fetch_proxy_from_pool(self):
         if not self.proxy_pool_api_url:
             return None
@@ -125,14 +203,23 @@ class BaseBrowserController(ABC):
             response = requests.get(self.proxy_pool_api_url, timeout=10)
             response.raise_for_status()
             payload = response.json()
-            proxy_value = payload.get("proxy")
-            if not proxy_value:
-                return None
-            if proxy_value.startswith("http://") or proxy_value.startswith("https://"):
-                return proxy_value
-            return f"http://{proxy_value}"
+            return self._normalize_pool_proxy_payload(payload)
         except Exception:
             return None
+
+    def report_bad_proxy_to_pool(self, proxy_raw, proxy_type="http"):
+        if not self.proxy_pool_delete_api_url or not proxy_raw:
+            return False
+
+        try:
+            delete_url = (
+                f"{self.proxy_pool_delete_api_url}?proxy={quote(proxy_raw)}"
+                f"&type={quote(proxy_type or 'http')}"
+            )
+            response = requests.get(delete_url, timeout=8)
+            return response.ok
+        except Exception:
+            return False
 
     def probe_proxy_reachability(self, proxy_url):
         """
@@ -142,7 +229,9 @@ class BaseBrowserController(ABC):
         if not self.enable_proxy_probe:
             return True
 
-        proxies = {"http": proxy_url, "https": proxy_url}
+        _, _, proxy_type = self.get_current_proxy_meta()
+        requests_proxy = self._requests_proxy_url(proxy_url, proxy_type)
+        proxies = {"http": requests_proxy, "https": requests_proxy}
         try:
             response = requests.get(
                 self.proxy_probe_url,
@@ -159,6 +248,64 @@ class BaseBrowserController(ABC):
         except Exception:
             return False
 
+    def wait_for_manual_captcha(self, page):
+        """
+        中文：人工模式下等待用户手动完成验证码，检测到页面进入下一步后返回成功。
+        English: In manual mode, wait for user to solve CAPTCHA and return success once the page advances.
+        """
+        print("[ManualCaptcha] - 请在浏览器中手动完成人机验证，完成后程序会自动继续。")
+        deadline = time.time() + self.manual_captcha_timeout_seconds
+        poll_interval_ms = max(1, int(self.manual_captcha_poll_interval_seconds * 1000))
+        last_hint_at = 0
+        seen_captcha_frame = False
+        frame_disappeared_rounds = 0
+
+        while time.time() < deadline:
+            try:
+                frame_count = 0
+                for selector in (
+                    'iframe#enforcementFrame',
+                    'iframe[title="验证质询"]',
+                    'iframe[title="Verification challenge"]'
+                ):
+                    try:
+                        frame_count += page.locator(selector).count()
+                    except Exception:
+                        pass
+
+                if frame_count > 0:
+                    seen_captcha_frame = True
+                    frame_disappeared_rounds = 0
+                elif seen_captcha_frame:
+                    frame_disappeared_rounds += 1
+                    if frame_disappeared_rounds >= 3:
+                        print("[ManualCaptcha] - 检测到验证码窗口已结束，继续执行。")
+                        return True
+
+                if page.locator('[aria-label="新邮件"]').count() > 0:
+                    print("[ManualCaptcha] - 检测到邮箱主界面，继续执行。")
+                    return True
+
+                if page.get_by_text('一些异常活动').count() > 0:
+                    print("[ManualCaptcha] - 页面提示异常活动，验证失败。")
+                    return False
+
+                if page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
+                    print("[ManualCaptcha] - 页面提示站点保护中，验证失败。")
+                    return False
+            except Exception:
+                pass
+
+            if time.time() - last_hint_at >= 15:
+                remain = max(0, int(deadline - time.time()))
+                print(f"[ManualCaptcha] - 请继续手动验证，剩余约 {remain} 秒。")
+                last_hint_at = time.time()
+
+            page.wait_for_timeout(poll_interval_ms)
+
+        print(f"[ManualCaptcha] - 超时未完成验证（{self.manual_captcha_timeout_seconds} 秒）。")
+        return False
+
     def rotate_proxy_for_retry(self, attempt_index):
         if not self.enable_auto_rotate_proxy:
             return False
@@ -166,17 +313,27 @@ class BaseBrowserController(ABC):
         fetch_retries = self.fetch_retries_per_round if self.fetch_retries_per_round > 0 else 1
         tried_proxies = set()
         for _ in range(fetch_retries):
-            new_proxy = self.fetch_proxy_from_pool()
-            if new_proxy:
-                if new_proxy in tried_proxies:
+            new_proxy_info = self.fetch_proxy_from_pool()
+            if new_proxy_info:
+                new_proxy = new_proxy_info["proxy_url"]
+                proxy_raw = new_proxy_info["proxy_raw"]
+                proxy_type = new_proxy_info["proxy_type"]
+
+                proxy_dedup_key = f"{proxy_type}|{proxy_raw}"
+                if proxy_dedup_key in tried_proxies:
                     continue
-                tried_proxies.add(new_proxy)
+                tried_proxies.add(proxy_dedup_key)
+
+                self.thread_local.proxy = new_proxy
+                self.thread_local.proxy_raw = proxy_raw
+                self.thread_local.proxy_type = proxy_type
 
                 if not self.probe_proxy_reachability(new_proxy):
                     print(f"[Info: ProxyProbe] - 代理探测未通过，跳过: {new_proxy}")
+                    if self.report_bad_proxy_on_probe_fail:
+                        self.report_bad_proxy_to_pool(proxy_raw, proxy_type)
                     continue
 
-                self.thread_local.proxy = new_proxy
                 self.close_thread_browser()
                 print(f"[Info: Proxy] - 第 {attempt_index} 次重试切换代理: {new_proxy}")
                 return True
@@ -256,7 +413,7 @@ class BaseBrowserController(ABC):
                 print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
                 return False
 
-            if page.locator('iframe#enforcementFrame').count() > 0:
+            if (not self.enable_manual_captcha) and page.locator('iframe#enforcementFrame').count() > 0:
                 print("[Error: FunCaptcha] - 验证码类型错误，非按压验证码。 ")
                 return False
             
@@ -271,12 +428,16 @@ class BaseBrowserController(ABC):
             print(f"[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。")
             return False 
         
-        filename = 'Results\\logged_email.txt' if self.enable_oauth2 else 'Results\\unlogged_email.txt'
-        with open(filename, 'a', encoding='utf-8') as f:
-            f.write(f"{email}@outlook.com: {password}\n")
-        print(f'[Success: Email Registration] - {email}@outlook.com: {password}')
-
         if not self.enable_oauth2:
+            try:
+                page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
+            except Exception:
+                print('[Error: Timeout] - 邮箱未初始化，无法正常收件。')
+                return False
+
+            with open('Results\\unlogged_email.txt', 'a', encoding='utf-8') as f:
+                f.write(f"{email}@outlook.com: {password}\n")
+            print(f'[Success: Email Registration] - {email}@outlook.com: {password}')
             return True
         
         try:
@@ -297,6 +458,9 @@ class BaseBrowserController(ABC):
                 pass
 
             page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
+            with open('Results\\logged_email.txt', 'a', encoding='utf-8') as f:
+                f.write(f"{email}@outlook.com: {password}\n")
+            print(f'[Success: Email Registration] - {email}@outlook.com: {password}')
             return True
 
         except:

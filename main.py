@@ -34,6 +34,10 @@ def process_single_flow(controller):
                     f2.write(
                         f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n"
                     )
+                with open(r"Results\outlook_token_export.txt", "a") as f3:
+                    f3.write(
+                        f"{email}@outlook.com----{password}----{controller.oauth_client_id}----{refresh_token}\n"
+                    )
                 print(f"[Success: TokenAuth] - {email}@outlook.com")
                 return True
 
@@ -41,6 +45,14 @@ def process_single_flow(controller):
 
         except Exception as e:
             print(e)
+            if getattr(controller, "report_bad_proxy_on_register_fail", False):
+                try:
+                    _, proxy_raw, proxy_type = controller.get_current_proxy_meta()
+                    if proxy_raw:
+                        controller.report_bad_proxy_to_pool(proxy_raw, proxy_type)
+                        print(f"[Info: Proxy] - 已回传失败代理到池: {proxy_type}://{proxy_raw}")
+                except Exception:
+                    pass
 
         finally:
             controller.clean_up(page, "done_browser")
