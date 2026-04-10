@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from get_token import get_access_token
 from controllers.patchright_controller import PatchrightController
@@ -12,6 +13,10 @@ def process_single_flow(controller):
     attempt = 1
     while True:
         page = None
+        proxy_url, proxy_raw, proxy_type = controller.get_current_proxy_meta()
+        thread_id = threading.get_ident()
+        display_proxy = f"{proxy_type}://{proxy_raw}" if proxy_raw else "no-proxy"
+        print(f"[Info: Attempt] - Thread {thread_id}, attempt {attempt}, proxy {display_proxy}")
         try:
             page = controller.get_thread_page()
             if page is None:
@@ -23,6 +28,7 @@ def process_single_flow(controller):
             result = controller.outlook_register(page, email, password)
 
             if result and not controller.enable_oauth2:
+                print(f"[Info: Attempt] - Thread {thread_id}, attempt {attempt} succeeded with {display_proxy}")
                 return True
             if not result:
                 raise RuntimeError("[Error: Register] - 注册流程失败。")
@@ -39,12 +45,14 @@ def process_single_flow(controller):
                         f"{email}@outlook.com----{password}----{controller.oauth_client_id}----{refresh_token}\n"
                     )
                 print(f"[Success: TokenAuth] - {email}@outlook.com")
+                print(f"[Info: Attempt] - Thread {thread_id}, attempt {attempt} succeeded with {display_proxy}")
                 return True
 
             raise RuntimeError("[Error: OAuth2] - Token 获取失败。")
 
         except Exception as e:
             print(e)
+            print(f"[Warn: Attempt] - Thread {thread_id}, attempt {attempt} failed with {display_proxy}")
             if getattr(controller, "report_bad_proxy_on_register_fail", False):
                 try:
                     _, proxy_raw, proxy_type = controller.get_current_proxy_meta()
@@ -58,6 +66,7 @@ def process_single_flow(controller):
             controller.clean_up(page, "done_browser")
 
         if not controller.enable_auto_rotate_proxy:
+            print(f"[Info: Attempt] - Auto rotate disabled, thread {thread_id} stop after attempt {attempt}.")
             return False
 
         if controller.max_proxy_retries > 0 and attempt >= controller.max_proxy_retries:

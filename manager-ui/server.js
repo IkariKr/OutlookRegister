@@ -56,7 +56,12 @@ function spawnManagedProcess(mode, cmd, args) {
 
   const child = spawn(cmd, args, {
     cwd: PROJECT_ROOT,
-    windowsHide: false
+    windowsHide: false,
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: "1",
+      PYTHONIOENCODING: "utf-8"
+    }
   });
 
   runState.proc = child;
@@ -178,7 +183,7 @@ app.post("/api/run/main", (req, res, next) => {
     }
 
     const mode = req.body?.mode || "main";
-    spawnManagedProcess(mode, PYTHON_PATH, ["main.py"]);
+    spawnManagedProcess(mode, PYTHON_PATH, ["-u", "main.py"]);
     res.json({ ok: true });
   } catch (err) {
     next(err);

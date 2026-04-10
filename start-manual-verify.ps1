@@ -6,6 +6,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+chcp 65001 > $null
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $configPath = Join-Path $projectRoot "config.json"
@@ -60,4 +64,4 @@ Write-Host "TaskCount=$TaskCount, ManualTimeoutSeconds=$ManualTimeoutSeconds"
 Write-Host "NoSystemProxy=$([bool]$NoSystemProxy)"
 Write-Host "Starting main.py ..."
 
-& $pythonPath "main.py"
+& $pythonPath "-u" "main.py"

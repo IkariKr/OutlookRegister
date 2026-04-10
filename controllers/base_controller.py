@@ -195,16 +195,29 @@ class BaseBrowserController(ABC):
         proxy_raw = getattr(self.thread_local, "proxy_raw", self._extract_proxy_raw(proxy_url))
         return proxy_url, proxy_raw, proxy_type
 
+    def format_proxy_display(self, proxy_url=None):
+        value = proxy_url if proxy_url is not None else self.get_current_proxy()
+        value = str(value or "").strip()
+        return value or "no-proxy"
+
     def fetch_proxy_from_pool(self):
         if not self.proxy_pool_api_url:
+            print("[Warn: ProxyPool] - proxy_pool.api_url is empty.")
             return None
 
         try:
+            print(f"[Info: ProxyPool] - fetching proxy from {self.proxy_pool_api_url}")
             response = requests.get(self.proxy_pool_api_url, timeout=10)
             response.raise_for_status()
             payload = response.json()
-            return self._normalize_pool_proxy_payload(payload)
-        except Exception:
+            proxy_info = self._normalize_pool_proxy_payload(payload)
+            if proxy_info:
+                print(f"[Info: ProxyPool] - fetched proxy {proxy_info['proxy_url']}")
+            else:
+                print(f"[Warn: ProxyPool] - no usable proxy in payload: {payload}")
+            return proxy_info
+        except Exception as e:
+            print(f"[Warn: ProxyPool] - fetch failed: {e}")
             return None
 
     def report_bad_proxy_to_pool(self, proxy_raw, proxy_type="http"):
@@ -227,6 +240,7 @@ class BaseBrowserController(ABC):
         English: Probe target-site reachability before proxy switch to reduce invalid retries.
         """
         if not self.enable_proxy_probe:
+            print(f"[Info: ProxyProbe] - probe disabled, accept {self.format_proxy_display(proxy_url)}")
             return True
 
         _, _, proxy_type = self.get_current_proxy_meta()
@@ -241,11 +255,24 @@ class BaseBrowserController(ABC):
             )
             status_code = response.status_code
             if status_code in self.proxy_probe_success_status_codes:
+                print(
+                    f"[Info: ProxyProbe] - {self.format_proxy_display(proxy_url)} reachable, "
+                    f"status={status_code}"
+                )
                 return True
             if self.proxy_probe_accept_non_5xx and status_code < 500 and status_code != 407:
+                print(
+                    f"[Info: ProxyProbe] - {self.format_proxy_display(proxy_url)} accepted by non-5xx rule, "
+                    f"status={status_code}"
+                )
                 return True
+            print(
+                f"[Warn: ProxyProbe] - {self.format_proxy_display(proxy_url)} rejected, "
+                f"status={status_code}"
+            )
             return False
-        except Exception:
+        except Exception as e:
+            print(f"[Warn: ProxyProbe] - {self.format_proxy_display(proxy_url)} probe failed: {e}")
             return False
 
     def wait_for_manual_captcha(self, page):

@@ -13,6 +13,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+chcp 65001 > $null
 
 function Convert-ToProxyUrl {
     param(
@@ -156,4 +160,4 @@ Write-Host "  ProxyPoolGet=$poolGetUrl"
 Write-Host "  InitProxy=$proxyValue"
 Write-Host "Starting main.py ..."
 
-& $pythonPath "main.py"
+& $pythonPath "-u" "main.py"

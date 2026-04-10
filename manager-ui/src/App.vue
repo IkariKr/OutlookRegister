@@ -113,7 +113,7 @@ function hydrateForm(cfg) {
 }
 
 function applyFormToConfig(cfg) {
-  const c = ensureConfigShape(structuredClone(cfg));
+  const c = ensureConfigShape(JSON.parse(JSON.stringify(cfg ?? {})));
   c.choose_browser = form.chooseBrowser;
   c.proxy = form.proxy;
   c.concurrent_flows = Number(form.concurrentFlows);
