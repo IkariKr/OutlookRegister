@@ -1,6 +1,6 @@
+import os
 import time
 import json
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from get_token import get_access_token
@@ -13,7 +13,7 @@ def process_single_flow(controller):
     attempt = 1
     while True:
         page = None
-        proxy_url, proxy_raw, proxy_type = controller.get_current_proxy_meta()
+        _, proxy_raw, proxy_type = controller.get_current_proxy_meta()
         thread_id = threading.get_ident()
         display_proxy = f"{proxy_type}://{proxy_raw}" if proxy_raw else "no-proxy"
         print(f"[Info: Attempt] - Thread {thread_id}, attempt {attempt}, proxy {display_proxy}")
@@ -26,7 +26,6 @@ def process_single_flow(controller):
             password = generate_strong_password()
 
             result = controller.outlook_register(page, email, password)
-
             if result and not controller.enable_oauth2:
                 print(f"[Info: Attempt] - Thread {thread_id}, attempt {attempt} succeeded with {display_proxy}")
                 return True
@@ -36,11 +35,11 @@ def process_single_flow(controller):
             token_result = get_access_token(page, email)
             if token_result[0]:
                 refresh_token, access_token, expire_at = token_result
-                with open(r"Results\outlook_token.txt", "a") as f2:
+                with open(r"Results\outlook_token.txt", "a", encoding="utf-8") as f2:
                     f2.write(
                         f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n"
                     )
-                with open(r"Results\outlook_token_export.txt", "a") as f3:
+                with open(r"Results\outlook_token_export.txt", "a", encoding="utf-8") as f3:
                     f3.write(
                         f"{email}@outlook.com----{password}----{controller.oauth_client_id}----{refresh_token}\n"
                     )
@@ -55,10 +54,10 @@ def process_single_flow(controller):
             print(f"[Warn: Attempt] - Thread {thread_id}, attempt {attempt} failed with {display_proxy}")
             if getattr(controller, "report_bad_proxy_on_register_fail", False):
                 try:
-                    _, proxy_raw, proxy_type = controller.get_current_proxy_meta()
-                    if proxy_raw:
-                        controller.report_bad_proxy_to_pool(proxy_raw, proxy_type)
-                        print(f"[Info: Proxy] - 已回传失败代理到池: {proxy_type}://{proxy_raw}")
+                    _, current_proxy_raw, current_proxy_type = controller.get_current_proxy_meta()
+                    if current_proxy_raw:
+                        controller.report_bad_proxy_to_pool(current_proxy_raw, current_proxy_type)
+                        print(f"[Info: Proxy] - 已回传失败代理到池: {current_proxy_type}://{current_proxy_raw}")
                 except Exception:
                     pass
 
@@ -78,7 +77,6 @@ def process_single_flow(controller):
         if not rotated:
             print("[Error: ProxyPool] - 代理池未取到可用代理，停止当前任务。")
             return False
-
         attempt = next_attempt
 
 
