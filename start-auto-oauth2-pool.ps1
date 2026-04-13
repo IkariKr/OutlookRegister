@@ -3,8 +3,12 @@ param(
     [int]$Concurrency = 3,
     [ValidateSet("patchright", "playwright")]
     [string]$Browser = "patchright",
+    [ValidateSet("direct", "system", "pool_system")]
+    [string]$ProxyMode = "pool_system",
+    [string]$SystemProxy = "127.0.0.1:7890",
     [ValidateSet("https", "socks5")]
     [string]$ProxyType = "https",
+    [string]$FallbackProxyTypes = "socks5,http",
     [string]$PoolApiBase = "http://127.0.0.1:5010",
     [int]$MaxProxyRetries = 8,
     [int]$FetchProxyRetries = 6,
@@ -75,35 +79,99 @@ if (-not $config.playwright) {
     $config | Add-Member -NotePropertyName playwright -NotePropertyValue ([PSCustomObject]@{})
 }
 
-$proxyResp = $null
-for ($i = 1; $i -le [Math]::Max(1, $FetchProxyRetries); $i++) {
-    try {
-        $candidate = Invoke-RestMethod -Uri $poolGetUrl -TimeoutSec 15
-        if ($candidate -and $candidate.proxy) {
-            $proxyResp = $candidate
-            break
+$proxyValue = ""
+$proxySource = "direct"
+$selectedGetUrl = $poolGetUrl
+
+if ($ProxyMode -eq "direct") {
+    $proxyValue = ""
+    $proxySource = "direct"
+}
+elseif ($ProxyMode -eq "system") {
+    $proxyValue = Convert-ToProxyUrl -ProxyRaw $SystemProxy -ProxyTypeRaw "http"
+    $proxySource = "system"
+}
+else {
+    $typeCandidates = @()
+    $typeCandidates += $ProxyType
+    if (-not [string]::IsNullOrWhiteSpace($FallbackProxyTypes)) {
+        foreach ($item in $FallbackProxyTypes.Split(",")) {
+            $t = $item.Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($t)) { continue }
+            if (-not ($typeCandidates -contains $t)) {
+                $typeCandidates += $t
+            }
         }
-    } catch {
     }
-    if ($i -lt [Math]::Max(1, $FetchProxyRetries)) {
-        Start-Sleep -Seconds $FetchProxyRetryIntervalSeconds
-    }
-}
 
-if ($null -eq $proxyResp -or -not $proxyResp.proxy) {
-    throw "Proxy pool has no available proxy after $FetchProxyRetries retries: $poolGetUrl"
-}
+    $proxyResp = $null
+    $lastError = ""
+    $lastPayloadJson = ""
+    $maxFetchRounds = [Math]::Max(1, $FetchProxyRetries)
 
-$proxyRaw = [string]$proxyResp.proxy
-$proxyTypeRaw = [string]$proxyResp.proxy_type
-if ([string]::IsNullOrWhiteSpace($proxyTypeRaw)) {
-    if ($ProxyType -eq "socks5") {
-        $proxyTypeRaw = "socks5"
-    } else {
-        $proxyTypeRaw = "http"
+    for ($round = 1; $round -le $maxFetchRounds; $round++) {
+        foreach ($candidateType in $typeCandidates) {
+            $candidateGetUrl = "$poolApiBaseNorm/get/?type=$candidateType"
+            Write-Host "Proxy fetch round $round/$maxFetchRounds, type=$candidateType"
+            try {
+                $candidate = Invoke-RestMethod -Uri $candidateGetUrl -TimeoutSec 15
+                if ($null -ne $candidate) {
+                    $lastPayloadJson = ($candidate | ConvertTo-Json -Depth 10 -Compress)
+                }
+                if ($candidate -and $candidate.proxy) {
+                    $proxyResp = $candidate
+                    $selectedGetUrl = $candidateGetUrl
+                    break
+                }
+            } catch {
+                $lastError = $_.Exception.Message
+            }
+        }
+
+        if ($proxyResp) { break }
+        if ($round -lt $maxFetchRounds) {
+            Start-Sleep -Seconds $FetchProxyRetryIntervalSeconds
+        }
+    }
+
+    if ($null -eq $proxyResp -or -not $proxyResp.proxy) {
+        if ([string]::IsNullOrWhiteSpace($SystemProxy)) {
+            $serviceReachable = $true
+            try {
+                $poolUri = [System.Uri]$poolApiBaseNorm
+                $poolPort = if ($poolUri.Port -gt 0) { $poolUri.Port } else { 80 }
+                $serviceReachable = Test-NetConnection -ComputerName $poolUri.Host -Port $poolPort -InformationLevel Quiet -WarningAction SilentlyContinue
+            } catch {
+                $serviceReachable = $true
+            }
+
+            if (-not $serviceReachable) {
+                throw "Proxy pool service unreachable: $poolApiBaseNorm (tcp check failed)"
+            }
+            if ($lastError -and ($lastError -like "*actively refused*" -or $lastError -like "*积极拒绝*" -or $lastError -like "*无法连接*")) {
+                throw "Proxy pool service unreachable: $poolApiBaseNorm (error: $lastError)"
+            }
+            throw "Proxy pool has no available proxy after $FetchProxyRetries retries (types=$($typeCandidates -join ',')). Last payload: $lastPayloadJson"
+        }
+
+        $proxyValue = Convert-ToProxyUrl -ProxyRaw $SystemProxy -ProxyTypeRaw "http"
+        $proxySource = "pool_fallback_system"
+        Write-Warning "Proxy pool unavailable, fallback to system proxy: $proxyValue"
+    }
+    else {
+        $proxyRaw = [string]$proxyResp.proxy
+        $proxyTypeRaw = [string]$proxyResp.proxy_type
+        if ([string]::IsNullOrWhiteSpace($proxyTypeRaw)) {
+            if ($ProxyType -eq "socks5") {
+                $proxyTypeRaw = "socks5"
+            } else {
+                $proxyTypeRaw = "http"
+            }
+        }
+        $proxyValue = Convert-ToProxyUrl -ProxyRaw $proxyRaw -ProxyTypeRaw $proxyTypeRaw
+        $proxySource = "pool"
     }
 }
-$proxyValue = Convert-ToProxyUrl -ProxyRaw $proxyRaw -ProxyTypeRaw $proxyTypeRaw
 
 $config.choose_browser = $Browser
 $config.proxy = $proxyValue
@@ -119,8 +187,8 @@ if (-not $config.oauth2.redirect_url -or [string]::IsNullOrWhiteSpace([string]$c
     $config.oauth2.redirect_url = "http://localhost:8000"
 }
 
-$config.proxy_pool.enable_auto_rotate = $true
-$config.proxy_pool.api_url = $poolGetUrl
+$config.proxy_pool.enable_auto_rotate = [bool]($ProxyMode -eq "pool_system" -and $proxySource -eq "pool")
+$config.proxy_pool.api_url = $selectedGetUrl
 $config.proxy_pool.delete_api_url = $poolDeleteUrl
 $config.proxy_pool.retry_interval_seconds = 2
 $config.proxy_pool.max_proxy_retries = $MaxProxyRetries
@@ -141,7 +209,12 @@ if ($null -eq $config.proxy_pool.probe_accept_non_5xx) {
     $config.proxy_pool.probe_accept_non_5xx = $true
 }
 
-$config.playwright.no_system_proxy = $false
+if ($ProxyMode -eq "direct") {
+    $config.playwright.no_system_proxy = $true
+}
+else {
+    $config.playwright.no_system_proxy = $false
+}
 if ($Browser -eq "playwright") {
     $browserPath = [string]$config.playwright.browser_path
     if ([string]::IsNullOrWhiteSpace($browserPath) -or !(Test-Path -LiteralPath $browserPath)) {
@@ -156,7 +229,8 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 Write-Host "Auto mode config has been written:"
 Write-Host "  Browser=$Browser Concurrency=$Concurrency TaskCount=$TaskCount"
 Write-Host "  OAuth2=ON ManualCaptcha=OFF"
-Write-Host "  ProxyPoolGet=$poolGetUrl"
+Write-Host "  ProxyMode=$ProxyMode Source=$proxySource"
+Write-Host "  ProxyPoolGet=$($config.proxy_pool.api_url)"
 Write-Host "  InitProxy=$proxyValue"
 Write-Host "Starting main.py ..."
 

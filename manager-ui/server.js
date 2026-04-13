@@ -238,6 +238,8 @@ app.post("/api/run/auto-oauth2-pool", (req, res, next) => {
     const taskCount = Number(req.body?.taskCount ?? 6);
     const concurrency = Number(req.body?.concurrency ?? 3);
     const browser = String(req.body?.browser ?? "patchright");
+    const proxyMode = String(req.body?.proxyMode ?? "pool_system");
+    const systemProxy = String(req.body?.systemProxy ?? "127.0.0.1:7890");
     const proxyType = String(req.body?.proxyType ?? "https");
     const maxProxyRetries = Number(req.body?.maxProxyRetries ?? 8);
     const fetchProxyRetries = Number(req.body?.fetchProxyRetries ?? 6);
@@ -255,6 +257,10 @@ app.post("/api/run/auto-oauth2-pool", (req, res, next) => {
       String(concurrency),
       "-Browser",
       browser,
+      "-ProxyMode",
+      proxyMode,
+      "-SystemProxy",
+      systemProxy,
       "-ProxyType",
       proxyType,
       "-MaxProxyRetries",

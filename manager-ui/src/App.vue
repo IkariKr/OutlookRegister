@@ -38,6 +38,8 @@ const runOptions = reactive({
   autoTaskCount: 6,
   autoConcurrency: 3,
   autoBrowser: "patchright",
+  autoProxyMode: "pool_system",
+  autoSystemProxy: "127.0.0.1:7890",
   autoProxyType: "https",
   autoMaxProxyRetries: 8,
   autoFetchProxyRetries: 6,
@@ -206,6 +208,8 @@ async function runAutoOauth2Pool() {
       taskCount: Number(runOptions.autoTaskCount),
       concurrency: Number(runOptions.autoConcurrency),
       browser: runOptions.autoBrowser,
+      proxyMode: runOptions.autoProxyMode,
+      systemProxy: runOptions.autoSystemProxy,
       proxyType: runOptions.autoProxyType,
       maxProxyRetries: Number(runOptions.autoMaxProxyRetries),
       fetchProxyRetries: Number(runOptions.autoFetchProxyRetries),
@@ -385,22 +389,32 @@ onUnmounted(() => {
                 <option value="playwright">playwright</option>
               </select>
             </label>
-            <label>代理类型
+            <label>启动代理模式
+              <select v-model="runOptions.autoProxyMode">
+                <option value="direct">裸连</option>
+                <option value="system">系统代理 (127.0.0.1:7890)</option>
+                <option value="pool_system">代理池 + 系统代理</option>
+              </select>
+            </label>
+            <label>系统代理地址
+              <input v-model="runOptions.autoSystemProxy" placeholder="127.0.0.1:7890" />
+            </label>
+            <label v-if="runOptions.autoProxyMode === 'pool_system'">代理池首选类型
               <select v-model="runOptions.autoProxyType">
                 <option value="https">https</option>
                 <option value="socks5">socks5</option>
               </select>
             </label>
-            <label>最大代理重试
+            <label v-if="runOptions.autoProxyMode === 'pool_system'">最大代理重试
               <input v-model.number="runOptions.autoMaxProxyRetries" type="number" min="0" />
             </label>
-            <label>取代理重试次数
+            <label v-if="runOptions.autoProxyMode === 'pool_system'">取代理重试次数
               <input v-model.number="runOptions.autoFetchProxyRetries" type="number" min="1" />
             </label>
-            <label>取代理重试间隔秒
+            <label v-if="runOptions.autoProxyMode === 'pool_system'">取代理重试间隔秒
               <input v-model.number="runOptions.autoFetchProxyRetryIntervalSeconds" type="number" min="1" />
             </label>
-            <label class="check">
+            <label v-if="runOptions.autoProxyMode === 'pool_system'" class="check">
               <input v-model="runOptions.autoDisableProbe" type="checkbox" />
               禁用探测（不建议）
             </label>
